@@ -1,0 +1,179 @@
+---
+title: "Spark_ML"
+author: "Mona"
+date: "6/7/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(sparklyr)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(readxl)
+library(randomForest)
+
+
+sc <- spark_connect(master = "local")
+
+#Data
+train_df <- read_excel("Data/TrainingData_Correlation.xlsx")
+test_df <- read_excel("Data/TestData_Correlation.xlsx")
+train_df$Response <- as.factor(train_df$Response)
+test_df$Response <- as.factor(test_df$Response)
+
+train_convertdf <- as.data.frame(train_df)
+test_convertdf <- as.data.frame(test_df)
+
+
+#create spark Dataframe for the data and convert the response to Character
+train_sdf <- copy_to(sc,train_df, overwrite = TRUE) %>% mutate(Response = as.character(Response))
+test_sdf <- copy_to(sc, test_df, overwrite = TRUE) %>% mutate(Response = as.character(Response))
+train_tbl <- sdf_copy_to(sc, train_convertdf,overwrite = TRUE)
+
+
+
+#Random Forest
+grid_rf <- list(
+  random_forest = list(impurity=c("gini","entropy"), num_trees = 70, max_depth = 10) )
+
+cv_rf <- ml_cross_validator(sc, estimator = ml_random_forest_classifier(sc),
+                            grid_rf, 
+                            evaluator = ml_multiclass_classification_evaluator(sc), num_folds = 5)
+
+cv_model_rf <- ml_fit(cv_rf, ft_r_formula(train_sdf,Response ~ .))
+rf_metrics <- ml_validation_metrics(cv_model_rf)
+print(rf_metrics)
+ml_feature_importances(cv_model_rf)
+
+
+#Random Forest
+rf_model_1 <- train_sdf %>% ml_random_forest_classifier(Response ~ ., num_trees = 80, max_depth = 10, max_bins = 50,  impurity=("entropy"))
+pred_rf <- ml_predict(rf_model_1, test_sdf)
+ml_multiclass_classification_evaluator(pred_rf)
+
+#Normal randomForest
+library(caret)
+rf <- randomForest(Response~., data=train_df, proximity=TRUE) 
+print(rf)
+p1 <- predict(rf, train_df)
+confusionMatrix(p1, train_df$Response)
+p2 <- predict(rf, test_df)
+confusionMatrix(p2, test_df$Response)
+
+spark_apply()
+
+
+#Trying spark
+library(caret)
+trnControl <- trainControl(method = "cv", number = 5)
+modelFunction <- function(train_tbl_1){
+  train(Response ~ . , data=train_tbl_1, method = "rpart", parms = list(split = "gini") , tuneLength=10, trControl=trnControl)
+}
+
+train_tbl %>% spark_apply( 
+ function(e) summary(train(Response ~ . , e, method = "rpart", parms = list(split = "gini") , tuneLength=10, trControl=trnControl))
+ )
+
+
+grid <- list(ntree = 300, mtry = 13) %>%
+  purrr:::cross_df() %>%
+  copy_to(sc, .)
+
+
+results <- spark_apply(
+  grid,
+  function(grid, trainingdata) {
+    model <- rpart::rpart(
+      Response ~ .,
+      data = trainingdata,
+      control = rpart::rpart.control(minsplit = grid$minsplit,
+                                     maxdepth = grid$maxdepth)
+    )
+    dplyr::mutate(
+      grid,
+      accuracy = mean(round(predict(model, dplyr::select(trainingdata, -Response))) == trainingdata$Response)
+    )
+  },
+  context = train_convertdf)
+
+
+
+ train_tbl %>% spark_apply(function(e, test_convertdf) {
+   model <- randomForest::randomForest(
+      Response ~ .,
+      data = e, mtry = 13, ntree = 300, importance = TRUE, proximity=TRUE )}, context = test_convertdf
+   ) %>% collect()
+   
+   
+   
+   
+   spark_apply(function(test_sdf) {
+    model <- randomForest::randomForest(
+      Response ~ .,
+      data = train_sdf, mtry = 13, ntree = 300, importance = TRUE, proximity=TRUE )
+       dplyr::mutate(accuracy = predict(model, train_sdf))
+   
+  },
+  context = test_sdf)
+
+
+ accuracy = mean(round(predict(model, dplyr::select(trainingdata, -Response))) == trainingdata$Response)
+
+iris <- copy_to(sc, test_df, overwrite = TRUE)
+iris %>%
+  spark_apply(nrow, group_by = "Response")
+iris %>%
+  spark_apply(
+    function(e) {
+      model <- randomForest::randomForest(Response ~ ., e)
+      summary(model)
+      predict(model,e)
+      },
+    names = "r.squared") %>% collect()
+
+
+
+train_tbl %>% spark_apply(
+            function(e)
+            summary(randomForest::randomForest(Response ~., mtry=13,importance=TRUE, proximity = TRUE))
+            )
+           
+
+ 
+
+
+train_tbl_1 <-sdf_copy_to(sc, train_df, overwrite = TRUE)
+train_tbl_1%>%spark_apply(function(e)train(Response~., e, method = "rpart", parms = list(split = "gini"), tuneLength=10, trControl=trnControl)$bestTune)
+
+
+
+
+#Neural Network
+nn_model <- train_sdf %>% ml_multilayer_perceptron_classifier(Response ~ ., layers = c(184,18,6))
+pred_nn <- ml_predict(nn_model, test_sdf)
+ml_multiclass_classification_evaluator(pred_nn)
+
+
+lambda = 3 #10^seq(-3,3,.5)
+#Linear Regression
+
+#param_grid <- list(
+#  logistic = list(
+#    elastic_net_param = list(0, 0.01),
+#    reg_param = list(0, 0.01)
+#  ))
+
+
+
+
+
+
+
+
+
+
+
+```

@@ -1,0 +1,246 @@
+---
+title: "Capstone_FeatureSelection"
+author: "Mona"
+date: "6/4/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(dplyr)
+library(readxl)
+library(ggplot2)
+library(corrplot)
+library(caret)
+
+#Data
+train_df <- read_excel(path = "Data/Training Data_IDS.xlsx")
+train_df_noLabels <- read_excel(path="Data/Training Data_withoutlabelnames.xlsx")
+test_df<- read_excel(path = "Data/Test Data_IDS.xlsx")
+train_df$Response <- as.factor(train_df$Response)
+test_df$Response <- as.factor(test_df$Response)
+dim(train_df)
+str(train_df)
+
+```
+
+##Feature selection - Dimensionality Reduction
+
+```{r}
+
+#initial analysis
+#Due to high dimension, hard to see the scatter plot so lets see counts of Response variables
+ResponseData <- train_df %>% count(Response, sort=TRUE)
+ResponseData
+ggplot(data=ResponseData, aes(x=Response, y=n)) + geom_bar(stat="identity")
+#Results : None of the Activities have 0 rows. The data does not look skewed
+
+#Anova test - one way anova to get the relationship between Response and each variable
+predictorsList <- train_df %>% select(-Response) %>% names()
+results <- lapply(predictorsList, function(x){
+        model_formula <- formula(paste(x,"~Response"))
+        lm_model <- lm(model_formula,data=train_df)
+        summary_anova <- anova(lm_model)
+        data.frame(variable_name = x, Df = summary_anova$Df[1], p = summary_anova$P[1])
+        })
+results_table <- do.call(rbind, results)
+
+significant_variables <- results_table %>% filter(p < 0.05)
+significant_variables
+dim(significant_variables)
+#Only getting pvalues without variable names. variable names are also required. Let me see
+#p <- unlist(lapply(aov_results, function(x) x[[1]]$"Pr(>F)"[1]))
+#Results : 548 columns are significant with p_value < 0.05 as per ANOVA test
+
+#Correlation with all the variables to the Y = Response
+correlation_with_Y <- sapply(train_df_noLabels, cor, y= train_df_noLabels$Response)
+highlyCorrelated_Y <- as.data.frame(correlation_with_Y) %>% filter(abs(correlation_with_Y) > 0.2)
+dim(highlyCorrelated_Y)
+#Results : correlation of all variables against y=Response. 447(includes Response) are hightly correlated with Response variable. These variables can be redundant with informations so we will check to how many variables are providing redundant info.
+
+
+#Correlation within the variables to check the repeated information 
+corMatrix <- cor(train_df[,-1])
+print(corMatrix)
+highlyCorrelated <- findCorrelation(corMatrix, cutoff = 0.8)
+highlyCorrelated <- sort(highlyCorrelated)
+length(highlyCorrelated)
+important_var <- train_df[, -highlyCorrelated] %>% select(-Response) %>% colnames() 
+
+important_data <- train_df %>% select(.dots=dput(as.character(important_var)),'Response')
+length(important_var)
+important_data %>% select(-Response) %>% cor() %>% corrplot(method = "circle")
+# Results : 184 variables are not correlated. Other were highly correlated variables with redundant informations. 377 features are hightly correlated. btw corrplot takes long and it looks all messed up. can't see a single variable clearly
+
+#PCA
+pca_results <- prcomp(train_df[,-1], center = TRUE, scale. = TRUE)
+summary(pca_results)
+str(pca_results)
+pca_results$rotation
+variance <- pca_results$sdev^2 #variance is square of deviation
+variance
+Proportion_of_Variance <- variance /sum(variance)
+head(Proportion_of_Variance,20)*100
+sum(head(Proportion_of_Variance,110)*100)
+sum(head(Proportion_of_Variance,190)*100)
+Cumulative_variance <- cumsum(Proportion_of_Variance)
+plot(Cumulative_variance, type = "b")
+summary(pca_results)$importance[2,]
+dim(pca_results$x)
+
+#Results : First 110 features give 95.28% of total variance. first 190 gives 99.04% of total variance. SO i think we can consider first 110 but i will confirm this with Dr. Brad or my team. btw i dont know how to draw the pca fancy plots but got the results here and didnt required
+
+#Using PCA results. Taking 190 variables in total
+train.data <- data.frame(Response = train_df$Response, pca_results$x)
+train.data <- train.data[,1:110]
+metric <-"Accuracy"
+control <- trainControl(method="repeatedcv", number = 10, repeats=3)
+mtry <- sqrt(ncol(train.data))
+tunegrid <- expand.grid(.mtry = mtry)
+model_rf_pca <- train(Response ~ ., data=train.data, method="rf", metric=metric, tuneGrid = tunegrid, trControl=control)
+prediction_rf <- predict(model_rf_pca, newdata = train.data)
+confusionMatrix(prediction_rf, train.data$Response)
+
+test.data <- predict(pca_results, newdata = test_df)
+test.data <- cbind(Response = test_df$Response, test.data)
+test.data <- test.data[,1:110]
+pred_test <- predict(model_rf_pca, test.data)
+confusionMatrix(pred_test,test.data$Response)
+
+
+#Using Correlation results. Taking 185 variables in total
+new_traindata <- train_df[,-highlyCorrelated]
+new_testdata <- test_df[,-highlyCorrelated]
+
+library(writexl)
+write_xlsx(new_traindata,"Data/TrainingData_Correlation_IDs.xlsx")
+write_xlsx(new_testdata,"Data/TestData_Correlation_IDs.xlsx")
+
+
+#Overall Results : PCA might be misleading sometimes and features containing imp information may be not shown as important. As per my understanding, we should consider features that are extracted by correlation matrix.
+
+
+
+```
+
+##Models with new variables from correlation(Ignore for now. Still working on this one)
+
+```{r}
+bestTunedModels = function(trained_model){
+  accuracy = which(rownames(trained_model$results) == rownames(trained_model$bestTune))
+  bestresults = trained_model$results[accuracy,]
+  rownames(bestresults) = NULL
+  bestresults
+} 
+
+modeldata <- matrix(data = NA, nrow = 6, ncol = 3)
+colnames(modeldata) <- c("train Accuracy","test Accuracy")
+rownames(modeldata) <- c("Decision Tree", "Random Forest", "multinomial", "neural network", "Lasso", "KNN")
+modeldata
+```
+
+```{r}
+
+
+new_traindata <- read_excel("Data/TrainingData_Correlation_IDs.xlsx")
+new_testdata <- read_excel("Data/TestData_Correlation_IDs.xlsx")
+new_traindata$Response <-as.factor(new_traindata$Response)
+new_testdata$Response <- as.factor(new_testdata$Response)
+
+head(new_traindata)
+dim(new_traindata)
+
+#Decision Tree . Using gini to split large part as we have huge data. Dr. Brad also suggested the same to start with big parts
+set.seed(1000)
+trnControl <- trainControl(method = "cv", number = 5)
+model_dt <- train(Response ~ . , data=new_traindata, method = "rpart", parms = list(split = "gini") , tuneLength=10, trControl=trnControl)
+model_dt
+varImp(model_dt)
+
+#Replace with function
+#bestTuned_dt <- model_dt$bestTune
+#model_dt$results[rownames(bestTuned_dt),]
+bestTunedParameters_dt <- bestTunedModels(model_dt)
+
+predict_dt <- predict(model_dt, newdata = new_testdata)
+cm_dt <- confusionMatrix(predict_dt, new_testdata$Response)
+modeldata[1,] =  c(as.numeric(bestTunedParameters_dt["Accuracy"]), as.numeric(cm_dt$overall["Accuracy"]))
+#Accuracy on train data with cp(0.0117) = 71.23. Accuracy on test data = 0.7138. Prediction of Laying position is okay but for other activities, the acuracy is less as per confusion matrix. Only 10 are important variables as per results
+
+#Random Forest
+set.seed(1000)
+mtry <- floor(sqrt(ncol(new_traindata))) #floor it to avoid decimal number
+tunegrid <- expand.grid(.mtry=mtry)
+trnControl <- trainControl(method = "cv", number = 5)
+model_rf <- train(Response~., data=new_traindata, method = "rf", tunegrid=tunegrid, trControl=trnControl)
+varImp(model_rf)
+plot(varImp(model_rf))
+
+bestTunedParameters_rf <- bestTunedModels(model_rf)
+
+predict_rf <- predict(model_rf,newdata = new_testdata)
+cm_rf <- confusionMatrix(predict_rf, new_testdata$Response)
+modeldata[2,] = c(as.numeric(bestTunedParameters_rf["Accuracy"]), as.numeric(cm_rf$overall["Accuracy"]))
+#tAccuracy on train with mtry(93) = 92.22. Accuracy on test = 84.65. Again prediction of Laying is better compared to all other activities.
+
+#multinomial Logistic model
+set.seed(1000)
+trnControl <- trainControl(method = "cv", number = 5)
+tuneGrid_mn <- expand.grid(decay = seq(0, 1, by = 0.1))
+model_mn <- train(Response~., data=new_traindata, method="multinom", trControl= trnControl, tunegrid=tuneGrid_mn, MaxNWts =10000)
+
+#Can't keep repeating for all the models. Let me see if I can make a function
+#bestTuned_mn <- model_mn$bestTune
+#model_mn$results[rownames(bestTuned_mn),]
+bestTunedParameters_mn <- bestTunedModels(model_mn)
+
+predict_mn <- predict(model_mn, newdata = new_testdata)
+cm_mn <- confusionMatrix(predict_mn, new_testdata$Response)
+modeldata[3,] = c(as.numeric(bestTunedParameters_mn["Accuracy"]), as.numeric(cm_mn$overall["Accuracy"]))
+#Accuracy on train with decay(0.01) is 82.97. Accuracy on test = 82.77.
+
+#neural network
+set.seed(1000)
+trControl <- trainControl(method = "cv", number=5)
+model_nn <- train(Response~., data=new_traindata, method="nnet", trControl = trnControl)
+
+bestTunedParameters_nn <- bestTunedModels(model_nn)
+
+predict_nn <- predict(model_nn, newdata = new_testdata)
+cm_nn <- confusionMatrix(predict_nn, new_testdata$Response)
+modeldata[4,] = c(as.numeric(bestTunedParameters_mn["Accuracy"]), as.numeric(cm_mn$overall["Accuracy"]))
+#Accuracy on train with decay(0.01) and size(5) is 82.90. Accuracy on test = 78.69. 
+#It seems the neural network and multinom are almost same? I will do some research later
+
+#Lasso
+set.seed(1000)
+trControl <- trainControl(method="cv", number=5)
+grid = 10^seq(-3,3,.2)
+lasso_model <- train(Response ~ ., new_traindata, method = "glmnet", trControl=trControl,  tuneGrid=expand.grid(alpha= 1,lambda=grid), family="multinomial")
+
+varImp(lasso_model)
+
+bestTunedParameters_ls <- bestTunedModels(lasso_model)
+
+predict_ls <- predict(lasso_model, newdata = new_testdata)
+cm_ls <- confusionMatrix(predict_ls,new_testdata$Response)
+modeldata[5,] = c(as.numeric(bestTunedParameters_ls["Accuracy"]), as.numeric(cm_ls$overall["Accuracy"]))
+
+#K Nearest Neighbour
+set.seed(1000)
+trControl <- trainControl(method="cv",number=5)
+model_knn <- train(Response~., new_traindata, method="knn", tuneLength=10, trControl=trControl)
+
+varImp(model_knn)
+
+bestTunedParameters_knn <- bestTunedModels(model_knn)
+
+predict_knn <- predict(model_knn, newdata = new_testdata)
+cm_knn <- confusionMatrix(predict_knn, new_testdata$Response)
+
+modeldata[6,] = c(as.numeric(bestTunedParameters_ls["Accuracy"]), as.numeric(cm_knn$overall["Accuracy"]))
+
+modeldata
+```
+

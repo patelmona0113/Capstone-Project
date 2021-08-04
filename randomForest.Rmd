@@ -1,0 +1,43 @@
+---
+title: "randomForest"
+author: "Mona"
+date: "7/24/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+
+library(randomForest)
+
+MODEL_SAVE_PATH = "RModel/randomForest"
+DEP_LIBS = c("randomForest")
+
+x <- subset(new_traindata, select=-Response)
+y <- new_traindata$Response
+
+model <- randomForest(x,y, mtry = 42, type="classification", proximity = TRUE, importance = TRUE, ntree = 190, impurity="gini")
+pred <- predict(model,new_testdata, type="class")
+#library(caret)
+#confusionMatrix(pred,new_testdata$Response)
+
+# save
+model_rds_path = paste(MODEL_SAVE_PATH, ".rds",sep='')
+model_dep_path = paste(MODEL_SAVE_PATH, ".dep",sep='')
+
+# save model
+saveRDS(model, model_rds_path)
+
+# save dependency list
+file_conn <- file(model_dep_path)
+writeLines(DEP_LIBS, file_conn)
+close(file_conn)
+
+
+
+```

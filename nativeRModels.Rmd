@@ -1,0 +1,164 @@
+---
+title: "nativeRModels"
+author: "Mona"
+date: "7/26/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+library(readxl)
+library(caret)
+library(randomForest)
+library(neuralnet)
+library(nnet)
+library("e1071")
+library(rpart)
+library(dplyr)
+library(ggplot2)
+
+new_traindata <- read_excel("Data/TrainingData_Correlation_IDs.xlsx")
+new_testdata <- read_excel("Data/TestData_Correlation_IDs.xlsx")
+new_traindata$Response <-as.factor(new_traindata$Response)
+new_testdata$Response <- as.factor(new_testdata$Response)
+x <- subset(new_traindata, select=-Response)
+y <- new_traindata$Response
+y <- as.factor(y)
+
+#RandomForest
+set.seed(1000)
+mtry <- floor(sqrt(ncol(new_traindata) - 1))
+model_rf <- randomForest(x,y, mtry = mtry, type="classification", proximity = TRUE, importance = TRUE, ntree = 190, impurity="gini")
+print(model_rf)
+
+
+#Tune it
+set.seed(1000)
+mtrytune <- tuneRF(x,y, ntreeTry=150, stepFactor=1.5,improve=0.01, trace=TRUE, plot=TRUE, impurity="gini")
+best.m <- mtrytune[mtrytune[, 2] == min(mtrytune[, 2]), 1]
+print(mtrytune)
+print(best.m)
+
+#Tunned RF
+set.seed(1000)
+start <- Sys.time()
+model_rf <- randomForest(x,y, mtry = 13, type="classification", proximity = TRUE, importance = TRUE, ntree = 190, impurity="gini")
+#87.67 # mtry with 13 and 42 will interchange sometimes. Its because of seed. sometimes, 13 gives 87.67 and sometimes 42 will give 87.67 but its because of seed. We have to keep seed constant.
+#model_rf <- randomForest(x,y, mtry = 13, type="classification", proximity = TRUE, importance = TRUE, ntree = 170, impurity="gini")
+#87.2
+#model_rf <- randomForest(x,y, mtry = 13, type="classification", proximity = TRUE, importance = TRUE, ntree = 200, impurity="gini")
+end <- Sys.time()
+time_rf <- end - start
+time_rf
+print(model_rf)
+pred_rf <- predict(model_rf,new_testdata)
+cm_rf <- confusionMatrix(pred_rf,new_testdata$Response)
+cm_rf$overall
+
+plot(model_rf)
+df <- predict(model_rf)
+ggplot(data=df, aes(x=Response, y=n)) + geom_bar(stat="identity")
+model_rf$importance
+
+df_rf<- data.frame( importance(model_rf, type=1))
+arrange(df_rf, desc(df_rf$MeanDecreaseAccuracy))
+varImpPlot(model_rf)
+
+#Plot prediction distribution
+#predict_train <- predict(model_rf,new_traindata,type="class")
+Responsedata_testdata <- new_testdata %>% count(Response,sort=TRUE)
+ggplot(data=Responsedata_testdata, aes(x=Response, y=n)) + geom_bar(stat="identity")
+new_testdata_test <- new_testdata
+output <- cbind(new_testdata_test, pred_rf)
+ResponseData_test <- output %>% count(pred_rf, sort=TRUE)
+ggplot(data=ResponseData_test, aes(x=pred_rf, y=n)) + geom_bar(stat="identity")
+
+#Plot prediction bar
+library(ggiraph)
+library(ggiraphExtra)
+library(plyr)
+library(ggeffects)
+ggpr <- ggpredict(model_rf)
+plot(ggpr)
+ggplot(new_traindata, aes(x = predict_plot, y = y, color = y) ) +
+     geom_point()+
+     geom_line(aes(y = predict_plot), size = 1)
+
+ggplot(data = subset(train_data_test),
+            aes(x = Response,
+                y = predValue,
+                color = Response,
+                fill = Response,
+                group = Response))
+
+
+ggplot(output, aes(x=pred_rf, y=Response)) + 
+  geom_point() +
+  geom_abline(intercept=0, slope=1) +
+  labs(x='Predicted Values', y='Actual Values', title='Predicted vs. Actual Values')
+
+#Multinomia Logistic Regression
+set.seed(1000)
+#model_lr <- nnet(y ~ ., data = new_traindata,MaxNWts=10000, size=8, family="multinomial",  entropy=TRUE)
+start_lr <- Sys.time()
+model_lr <- multinom(Response ~ ., family="multinomial", data=new_traindata, MaxNWts=10000)
+end_lr <- Sys.time()
+time_lr <- end_lr - start_lr
+time_lr
+pred_lr <- predict(model_lr,new_testdata, type="class", levels= rev(lvs) ) 
+cm_lr <-  confusionMatrix(pred_lr, new_testdata$Response)
+imp_lr <- varImp(model_lr)
+dfimp_lr <- data.frame(imp_lr)
+arrange(dfimp_lr, dfimp_lr$Overall) 
+
+
+#SVM
+set.seed(1000)
+start_sv <- Sys.time()
+model_svm <- svm(Response ~., new_traindata, kernel="radial", type="C", C="1.0")
+end_sv <- Sys.time()
+time_sv <- end_sv - start_sv
+time_sv
+pred_svm <- predict(model_svm, new_testdata)
+cm_svm <- confusionMatrix(pred_svm, new_testdata$Response)
+
+#Decision Tree
+set.seed(1000)
+start_dt <- Sys.time()
+model_dt <- rpart(Response~., data = new_traindata, method = "class")
+end_dt <- Sys.time()
+total_dt <- end_dt - start_dt
+total_dt
+pred_dt <- predict(model_dt, new_testdata, type = 'class')
+cm_dt <- confusionMatrix(pred_dt, new_testdata$Response)
+imp_dt <- varImp(model_dt)
+dfimp_dt <- data.frame(imp_dt)
+arrange(dfimp_dt, desc(dfimp_dt$Overall) )
+
+#Summarize
+cm_lists <- list("Random Forest" = cm_rf, 
+                 "Decision Tree" = cm_dt,
+                 "Multinomial Regression" = cm_lr,
+                 "SVM" = cm_svm)
+
+results <- lapply(cm_lists, function(x) {
+      data.frame(Accuracy = as.numeric(x$overall["Accuracy"]),
+                 Kappa = as.numeric(x$overall["Kappa"]),
+                 CILower = as.numeric(x$overall["AccuracyLower"]),
+                 CIUpper = as.numeric(x$overall["AccuracyUpper"]))
+
+})
+
+summary <- do.call(rbind, results)
+summary
+
+resultsTime <- data.frame(Model = c("Random Forest", "Decision Tree","Multinomial Regression","SVM"),
+                          Time = c(time_rf,total_dt, time_lr, time_sv))
+resultsTime
+      
+
+```
